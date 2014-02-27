@@ -15,28 +15,37 @@ import copy
 import sys
 
 def normalizeRadians(radians):
-	return radians % (pi/2)
+    """ Normalize an angle to pi/2 radians """
+    return radians % (pi/2)
 	
 def normalizeDegrees(degrees):
-	return degrees % 90
+    """ Normalize an angle to 90 degrees """
+    return degrees % 90
 	 
 def radians(degrees):
+    """ Convert an angle in degrees to radians """
     return degrees*(pi/180)
 
 def degrees(radians):
+    """ Convert an angle in radians to degrees """
     return radians*(180/pi)
 
 def angle(v1, v2):
-    ''' Calculate angle between 2 vectors
-        http://stackoverflow.com/questions/2827393/'''
+    """
+    Calculate angle between 2 vectors
+    http://stackoverflow.com/questions/2827393/
+    """
     return math.acos(dot(v1,v2)/(length(v1)*length(v2)))
 
 def length(v):
-    ''' Calculate length of a vector'''
+    """ 
+    Calculate length of a vector
+    Credit Meg Drouhard
+    """
     return math.sqrt(dot(v, v))
 
 def drawScaledEigenvectors(X,Y, eigVectors, eigVals, theColor='k'):
-    ''' Draw scaled eigenvectors starting at (X,Y)'''
+    """ Draw scaled eigenvectors starting at (X,Y)"""
     
     # For each eigenvector
     for col in xrange(eigVectors.shape[1]):
@@ -47,11 +56,71 @@ def drawScaledEigenvectors(X,Y, eigVectors, eigVals, theColor='k'):
                     eigVectors[1,col]*eigVals[col],
                     width=0.01, color=theColor)
 
+def ShannonEntropy(A, B = None, GetHistogram = False):
+    """ 
+    Compute the conditional Shannon entropy H(B|A) of two images A and B
+    Credit http://stackoverflow.com/questions/9002715
+    """
+    
+    if B is None:
+        
+        """
+        Compute the Shannon entropy H(B) of a single image B
+        Credit http://brainacle.com/calculating-image-entropy-with-python-how-and-why.html
+        """
+        # Get probability distribution of grey values
+        histogram, bins = histogram(B)
+        P_B = histogram / histogram.sum()
+
+        # Pluim 2003 p.2 equation (2)
+        # http://www.cs.jhu.edu/~cis/cista/746/papers/mutual_info_survey.pdf
+        H = -sum([p * math.log(p,2) for p in P_B if p != 0])
+        return H
+    
+    # 2D histogram gives the counts in each cell
+    H, A_edges, B_edges = \
+        histogram2d(A.ravel(), B.ravel(), bins=min(shape(A))/20)
+
+    # Get the joint probability distribution the images' grey values
+    # Divide by the total to get the probability of each cell
+    P_AB = H/H.sum()    # P(A,B)
+
+    # Sum over the axes to get their marginal entropy
+    P_A = H.sum(1)[:,newaxis]  # P(A) (nx1)
+    P_B = H.sum(0)[newaxis,:]  # P(B) (1xn)
+
+    if GetHistogram: return H
+    return P_AB, P_A, P_B
+
+def MutualInformation(A, B):
+    """
+    Compute the mutual information I(A,B) of two 2D images A and B
+    """
+    I_AB = KullbackLeibler(A, B)  # I(A,B)
+    return I_AB
+def KullbackLeibler(A, B):
+    """
+    Compute the Kullback-Leibler distance for two 2D images A and B
+    Credit http://stackoverflow.com/questions/9002715
+    """
+    seterr(all = 'ignore')    # Suppress log div by zero warning
+    
+    P_AB, P_A, P_B = ShannonEntropy(A,B) # P(B,A), P(A), P(B)
+    
+    # Pluim 2003 p.4 eq. (7)
+    # http://www.cs.jhu.edu/~cis/cista/746/papers/mutual_info_survey.pdf
+    KL = P_AB * log(P_AB/(P_A*P_B)) # Get information contribution
+    I_AB = KL[~isnan(KL)].sum()     # Filter nans and sum
+    
+    seterr(all = 'warn')
+    return I_AB                     # I(A,B)
+
 def imgCov(data):
-    ''' Calculate the x-mean, y-mean, and
-        return the cov matrix of an image.
-        http://stackoverflow.com/questions/9005659/
-    '''
+    """ 
+    Compute the x-mean, y-mean, and
+    return the cov matrix of a 2D image.
+    Credit http://stackoverflow.com/questions/9005659/
+    """
     
     def raw_moment(data, iord, jord):
         nrows, ncols = data.shape
@@ -71,9 +140,10 @@ def imgCov(data):
     return cov
 
 def imgCentroid(im):
-    ''' Get the centroid of an image
-        http://code.activestate.com/lists/python-image-sig/5121/
-    '''
+    """ 
+    Get the centroid of a 2D image
+    http://code.activestate.com/lists/python-image-sig/5121/
+    """
     sx = sy = n = 0
     x0, y0 = 0, 0
     x1, y1 = im.shape
@@ -86,9 +156,10 @@ def imgCentroid(im):
     return float(sx) / n + 0.5, float(sy) / n + 0.5
 
 def imageApplyHarshWeightingScheme(image, threshold=200):
-    ''' Apply weighting to an image, i.e. scale color values
-        Gate all values above the threshold to the maximum value
-    '''
+    """ 
+    Apply weighting to a 2D image, i.e. scale color values
+    Gate all values above the threshold to the maximum value
+    """
     
     imageW  = copy.deepcopy(image)       # weighted image
     max     = imgGetMaxPixelValue(image)
@@ -101,11 +172,14 @@ def imageApplyHarshWeightingScheme(image, threshold=200):
     return imageW
 
 def imgGetMaxPixelValue(image):
+    """ Return the maximum pixel value in an image """
     (x,y) = unravel_index(image.argmax(), image.shape)
     return image[x][y]
 
 def imgMadness(image):
-    import Image
+    """ 
+    Get the X-pixels, Y-pixels, and scaled RGB values from a 2D image
+    """
     
     # Get maximum pixel value for scaling
     max = float(imgGetMaxPixelValue(image))
@@ -123,34 +197,39 @@ def imgMadness(image):
 
     return (pixelsX, pixelsY, pixelRGB)
 
-# Apply black padding to an image. Doubles both dimensions and
-# places original image at center
 def imgPad(image):
-
-	newImg = zeros(multiply(image.shape,2), dtype=int)
+    """
+    Apply black padding to a 2D image. Doubles both dimensions and
+    places original image at center
+    """
+    
+    newImg = zeros(multiply(image.shape,2), dtype=int)
+    x,y = newImg.shape
 	
-	x,y = newImg.shape
+    x1, x2 = x/4, 3*x/4
+    y1, y2 = y/4, 3*y/4
 	
-	x1, x2 = x/4, 3*x/4
-	y1, y2 = y/4, 3*y/4
-	
-	for i in xrange(x):
-		for j in xrange(y):
-			
-			if (i >= x1 and i < x2 and j >= y1 and j < y2):
-				newImg[i][j] = image[i-x1][j-y1]
-	return newImg
+    for i in xrange(x):
+        for j in xrange(y):
+            
+            if (i >= x1 and i < x2 and j >= y1 and j < y2):
+                newImg[i][j] = image[i-x1][j-y1]
+    return newImg
 
 def imgUnpad(image):
+    """
+    Inverse operation of imgPad(). Crop first and last quarter
+    of a 2D image on both axes.
+    """
+    
+    x,y = image.shape
+    x1, x2 = x/4, 3*x/4
+    y1, y2 = y/4, 3*y/4
 
-	x,y = image.shape
-	x1, x2 = x/4, 3*x/4
-	y1, y2 = y/4, 3*y/4
+    return image[x1:x2, y1:y2]
 
-	return image[x1:x2, y1:y2]
-	
 def imgRotate(image, theta):
-    ''' Rotate an image'''
+    """ Rotate a 2D image """
         
     # Convert image data to point data which indexes color values
     pixelsX, pixelsY, pixelRGB = imgMadness(image)
@@ -185,12 +264,13 @@ def imgRotate(image, theta):
     #return ndimage.interpolation.rotate(image, theta*180/pi)
 
 def imgTranslate(image, x, y):
-    ''' Shift an image by x,y'''
+    """ Shift a 2D image by x,y """
     return ndimage.interpolation.shift(image, (x,y))
 
 def imgTranslateCentroidToCenter(image):
-	return imgTranslateToOrigin(image, toCenter=True)
-	
+    """ Translate a centroid of a 2D image to its geometric center """
+    return imgTranslateToOrigin(image, toCenter=True)
+
 def imgTranslateToOrigin(image, xOrig=0, yOrig=0, toCenter=False):
     ''' Shift the centroid of an image to the origin 
     	or to the specified coordinate
@@ -206,10 +286,11 @@ def imgTranslateToOrigin(image, xOrig=0, yOrig=0, toCenter=False):
     return imgTranslate(image, xOrig-centroid[0], yOrig-centroid[1])
 
 def imgRegister(img1, img2):
-    '''Register img2 to img1 using Meg's work
-        1st return value is translated to center
-        2nd return value is translated to center and rotated    
-    '''
+    """
+    Register img2 to img1
+    1st return value is img1 translated to center
+    2nd return value is img2 translated to center and rotated to img1
+    """
     
     # Pad image so that we can do imaging without clipping
     sys.stdout.write("Padding image...\n")
