@@ -1,4 +1,4 @@
-# SlaterImgLib
+# ImgLib
 # Image processing library
 # CS650 Image Processing Dr. Jens Gregor
 # Spring 2014
@@ -7,12 +7,12 @@
 
 import dicom, pylab
 from numpy import *
-from scipy import ndimage
+from scipy import ndimage, optimize
 import matplotlib.pyplot as plt
 import matplotlib.patches as patches
 import matplotlib as mpl
 import copy
-import sys
+import sys, os
 
 def normalizeRadians(radians):
     """ Normalize an angle to pi/2 radians """
@@ -35,7 +35,7 @@ def angle(v1, v2):
     Calculate angle between 2 vectors
     http://stackoverflow.com/questions/2827393/
     """
-    return math.acos(dot(v1,v2)/(length(v1)*length(v2)))
+    return degrees(math.acos(dot(v1,v2)/(length(v1)*length(v2))))
 
 def length(v):
     """ 
@@ -56,48 +56,119 @@ def drawScaledEigenvectors(X,Y, eigVectors, eigVals, theColor='k'):
                     eigVectors[1,col]*eigVals[col],
                     width=0.01, color=theColor)
 
-def ShannonEntropy(A, B = None, GetHistogram = False):
-    """ 
-    Compute the conditional Shannon entropy H(B|A) of two images A and B
-    Credit http://stackoverflow.com/questions/9002715
+def MITryTransformations( (x, y, theta), A, B):
+
+    # Restrict the possible transformations
+#    if abs(x) > 10 or abs(y) > 10 or abs(theta) > 15:
+#        return float("inf")
+
+    sys.stdout.write("Trying %f %f %f: " % (x, y, theta))
+
+    A_Translated_Rotated = imgTranslate(imgRotate(A, theta), x, y)
+    MI = -I(A_Translated_Rotated, B)
+
+    sys.stdout.write("%f\n" % MI)
+    return MI
+
+def MIRegister(A, B, silent = True):
+    
+    # Initial guess: 1x1 pixel x,y translation and 1 deg rotation
+    guess = [10, 10, 10]
+    
+    # Minimize with Powell's method, which doesn't require derivative,
+    # but only the value of the objective function.
+    x, y, theta = optimize.fmin_powell(MITryTransformations,
+                                       guess,
+                                       args=(A, B),
+                                       xtol = 0.001,
+                                       ftol = 0.001,
+                                       disp = silent)
+    
+    # Return A with optimal transformation
+    #A_optimal = imgRotate(imgTranslate(A, x, y), theta)
+    A_optimal = imgTranslate(imgRotate(A, theta), x, y)
+    return A_optimal, B
+
+def I(A, B, UseKullback = True):
+    """
+    Compute the mutual information I(A,B) of two 2D images A and B
+    using Kullback Leibler or Pluim et al. 2003 eq 6
+    """
+    if UseKullback is True:  I_AB = KullbackLeibler(A, B)
+    else:                    I_AB = PluimEq6(A, B)
+    
+    return I_AB # I(A,B)
+
+def JointHistogram(A, B):
+    """
+    Return the 2D histogram and edges for two images A and B
     """
     
-    if B is None:
-        
-        """
-        Compute the Shannon entropy H(B) of a single image B
-        Credit http://brainacle.com/calculating-image-entropy-with-python-how-and-why.html
-        """
-        # Get probability distribution of grey values
-        histogram, bins = histogram(B)
-        P_B = histogram / histogram.sum()
-
-        # Pluim 2003 p.2 equation (2)
-        # http://www.cs.jhu.edu/~cis/cista/746/papers/mutual_info_survey.pdf
-        H = -sum([p * math.log(p,2) for p in P_B if p != 0])
-        return H
-    
     # 2D histogram gives the counts in each cell
-    H, A_edges, B_edges = \
+    hist, A_edges, B_edges = \
         histogram2d(A.ravel(), B.ravel(), bins=min(shape(A))/20)
+
+    return hist, A_edges, B_edges
+
+def PluimEq2(P):
+    """
+    Pluim 2003 p.2 equation (2)
+    http://www.cs.jhu.edu/~cis/cista/746/papers/mutual_info_survey.pdf
+    """
+    H = -sum([p * math.log(p,2) for p in P.flatten() if p != 0])
+    
+    return H
+
+def PluimEq6(A, B):
+    """
+    Pluim 2003 p.3 equation (6)
+    http://www.cs.jhu.edu/~cis/cista/746/papers/mutual_info_survey.pdf
+    """
+
+    I_AB = H(A) + H(B) - H(A,B)
+    return I_AB
+
+def H(A, B = None):
+    return Shannon(A, B)
+
+def Shannon(A, B = None):
+    """
+    Compute the Shannon entropy H(A) of a single image A
+    Or compute the joint Shannon entropy H(A,B) of two images A and B
+    Credit http://brainacle.com/calculating-image-entropy-with-python-how-and-why.html
+    """
+    
+    hist, bins = histogram(A)          # Probability distributions of grey values
+    P = hist / hist.sum()              # P(A) or P(B|A) if B provided
+    
+    if B is not None:
+        histAB, A_edges, B_edges = JointHistogram(A, B)
+        P = histAB / histAB.sum()    # Joint Probability Distribution P(A, B)
+    
+    H = PluimEq2(P)
+    
+    return H
+
+def imgDistributions(A, B, GetHistogram = False):
+    """
+    Get the joint probability distribution and individual
+    probability distributions of two images A and B
+    Credit http://stackoverflow.com/questions/9002715
+    """
+
+    hist, A_edges, B_edges = JointHistogram(A, B)
 
     # Get the joint probability distribution the images' grey values
     # Divide by the total to get the probability of each cell
-    P_AB = H/H.sum()    # P(A,B)
+    P_AB = hist / hist.sum()      # P(A,B)
 
     # Sum over the axes to get their marginal entropy
-    P_A = H.sum(1)[:,newaxis]  # P(A) (nx1)
-    P_B = H.sum(0)[newaxis,:]  # P(B) (1xn)
+    P_A = hist.sum(1)[:,newaxis]  # P(A) (nx1)
+    P_B = hist.sum(0)[newaxis,:]  # P(B) (1xn)
 
-    if GetHistogram: return H
+    if GetHistogram: return hist
     return P_AB, P_A, P_B
 
-def MutualInformation(A, B):
-    """
-    Compute the mutual information I(A,B) of two 2D images A and B
-    """
-    I_AB = KullbackLeibler(A, B)  # I(A,B)
-    return I_AB
 def KullbackLeibler(A, B):
     """
     Compute the Kullback-Leibler distance for two 2D images A and B
@@ -105,7 +176,7 @@ def KullbackLeibler(A, B):
     """
     seterr(all = 'ignore')    # Suppress log div by zero warning
     
-    P_AB, P_A, P_B = ShannonEntropy(A,B) # P(B,A), P(A), P(B)
+    P_AB, P_A, P_B = imgDistributions(A, B) # P(A,B), P(A), P(B)
     
     # Pluim 2003 p.4 eq. (7)
     # http://www.cs.jhu.edu/~cis/cista/746/papers/mutual_info_survey.pdf
@@ -113,6 +184,7 @@ def KullbackLeibler(A, B):
     I_AB = KL[~isnan(KL)].sum()     # Filter nans and sum
     
     seterr(all = 'warn')
+    
     return I_AB                     # I(A,B)
 
 def imgCov(data):
@@ -176,27 +248,6 @@ def imgGetMaxPixelValue(image):
     (x,y) = unravel_index(image.argmax(), image.shape)
     return image[x][y]
 
-def imgMadness(image):
-    """ 
-    Get the X-pixels, Y-pixels, and scaled RGB values from a 2D image
-    """
-    
-    # Get maximum pixel value for scaling
-    max = float(imgGetMaxPixelValue(image))
-    
-    dims        = image.shape
-    pixelsX     = zeros(dims, dtype=int)
-    pixelsY     = zeros(dims, dtype=int)
-    pixelRGB    = zeros(dims, dtype=float)
-    
-    for x in xrange(dims[0]):
-        for y in xrange(dims[1]):
-            pixelsX[x][y]   = x
-            pixelsY[x][y]   = y
-            pixelRGB[x][y]  = image[x][y]/(max/255)  # Scale 0 to 255
-
-    return (pixelsX, pixelsY, pixelRGB)
-
 def imgPad(image):
     """
     Apply black padding to a 2D image. Doubles both dimensions and
@@ -229,42 +280,11 @@ def imgUnpad(image):
     return image[x1:x2, y1:y2]
 
 def imgRotate(image, theta):
-    """ Rotate a 2D image """
-        
-    # Convert image data to point data which indexes color values
-    pixelsX, pixelsY, pixelRGB = imgMadness(image)
-    xOrds = pixelsX.flatten()
-    yOrds = pixelsY.flatten()
-    
-    imageCoords = []
-    for i in xrange(len(xOrds)):
-        imageCoords.append([xOrds[i],yOrds[i]])
-    imageCoords = array(imageCoords).T
-
-    # Rotate the point data
-    R = array([[cos(theta), -sin(theta)],
-               [sin(theta),  cos(theta)]])
-    imageR = R.dot(imageCoords)
-
-    # Convert point data back to displayable image
-    displayableImageR = zeros(image.shape, dtype=int)
-
-    i=0
-    for x in xrange(image.shape[0]):
-        for y in xrange(image.shape[1]):
-            RGB_x = int(imageR[0][i])
-            RGB_y = int(imageR[1][i])
-            try:
-                displayableImageR[x][y] = pixelRGB[RGB_x][RGB_y]
-            except IndexError:  # These pixels will be clipped
-                pass
-            i+=1
-                                                                  
-    return displayableImageR
-    #return ndimage.interpolation.rotate(image, theta*180/pi)
+    """ Rotate a 2D image by theta degrees """
+    return ndimage.interpolation.rotate(image, theta, reshape=False)
 
 def imgTranslate(image, x, y):
-    """ Shift a 2D image by x,y """
+    """ Shift a 2D image by x, y pixels """
     return ndimage.interpolation.shift(image, (x,y))
 
 def imgTranslateCentroidToCenter(image):
@@ -285,20 +305,26 @@ def imgTranslateToOrigin(image, xOrig=0, yOrig=0, toCenter=False):
     	
     return imgTranslate(image, xOrig-centroid[0], yOrig-centroid[1])
 
-def imgRegister(img1, img2):
+def imgRegister(img1, img2, silent = True, showPlots = True, drawDifference = True):
     """
-    Register img2 to img1
+    Register img2 to img1 using principal axes
     1st return value is img1 translated to center
     2nd return value is img2 translated to center and rotated to img1
     """
     
-    # Pad image so that we can do imaging without clipping
+    # Redirect stdout to /dev/null
+    stdout = sys.stdout;
+    if silent:
+        f = open(os.devnull, 'w')
+        sys.stdout = f
+    
+    # Pad image to enable rotation without clipping
     sys.stdout.write("Padding image...\n")
     sys.stdout.flush()
     
     img1p = imgPad(img1)
     img2p = imgPad(img2)
-    
+
     sys.stdout.write("Translating centroids...\n")
     sys.stdout.flush()
     
@@ -334,6 +360,7 @@ def imgRegister(img1, img2):
     sys.stdout.flush()
         
     # Vector ordering magic
+    # TODO: fix this
     idx1		= eigVals1.argsort()[::-1]
     eigVals1	= eigVals1[idx1]
     eigVecs1	= eigVecs1[:,idx1]
@@ -363,14 +390,14 @@ def imgRegister(img1, img2):
     # How much rotation will be applied
     theta = angle(eigVecs1[0], eigVecs2[0])
     
-    # Hack alert: I don't know how to order the eigenvalues
-    # currently they are coming out orthonormal
-    # Fix by normalizing rotation to under 90 degrees
-    # a.k.a This program may rotate the wrong way for
+    # Hack alert: I don't know how to order the eigenvalues.
+    # Currently they are coming out orthonormal.
+    # I 'fix' this by normalizing rotation to under 90 degrees.
+    # a.k.a This algorithm may rotate the wrong direction for
     # rotations >= 45 degrees
-    theta = normalizeRadians(theta)
+    theta = normalizeDegrees(theta)
     
-    sys.stdout.write("\nRotating image %.4f degrees\n" % (degrees(theta)))
+    sys.stdout.write("\nRotating image %.4f degrees\n" % (theta))
     sys.stdout.flush()
     
     img2TR = imgRotate(img2T, theta)
@@ -388,22 +415,31 @@ def imgRegister(img1, img2):
     # Need to draw eigenvectors at centroids
     img1T_unpadded_centroid = imgCentroid(img1T_unpadded)
     img2TR_unpadded_centroid = imgCentroid(img2TR_unpadded)
+ 
+    if showPlots:
+        scaling = img1.shape[0]/2
+        # Draw eigenvectors at centroids scaled by their eigenvalues
+        drawScaledEigenvectors(	img1T_unpadded_centroid[0],
+                                img1T_unpadded_centroid[1],
+                                eigVecs1, eigVals1*scaling, 'b')
+        drawScaledEigenvectors(	img2TR_unpadded_centroid[0],
+                                img2TR_unpadded_centroid[1],
+                                eigVecs2, eigVals2*scaling, 'r')
+                               
+        sys.stdout.write("Plotting image...\n")
+        sys.stdout.flush() 
     
-    scaling = img1.shape[0]/2
-    # Draw eigenvectors at centroids scaled by their eigenvalues
-    drawScaledEigenvectors(	img1T_unpadded_centroid[0],
-    						img1T_unpadded_centroid[1],
-    						eigVecs1, eigVals1*scaling, 'b')
-    drawScaledEigenvectors(	img2TR_unpadded_centroid[0],
-    						img2TR_unpadded_centroid[1],
-    						eigVecs2, eigVals2*scaling, 'r')
-                           
-    sys.stdout.write("Plotting image...\n")
-    sys.stdout.flush() 
-    
-    # Draw the unregistered 1st and registered 2nd image
-    pylab.imshow(img1T_unpadded, cmap=pylab.cm.bone, alpha=0.5)
-    #pylab.imshow(img2T_unpadded, cmap=pylab.cm.bone, alpha=0.5)
-    pylab.imshow(img2TR_unpadded, cmap=pylab.cm.bone, alpha=0.5)
+        if drawDifference:
+            pylab.imshow(abs(img1T_unpadded-img2TR_unpadded), cmap=pylab.cm.bone, alpha=0.5)
+        else:
+            # Draw the unregistered 1st and registered 2nd image
+            pylab.imshow(img1T_unpadded, cmap=pylab.cm.bone, alpha=0.5)
+            #pylab.imshow(img2T_unpadded, cmap=pylab.cm.bone, alpha=0.5)
+            pylab.imshow(img2TR_unpadded, cmap=pylab.cm.bone, alpha=0.5)
+        
+        
 
+    # Restore stdout
+    if silent: sys.stdout = stdout
+    
     return img1T, img2TR
